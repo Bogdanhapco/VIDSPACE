@@ -114,8 +114,8 @@ class MediaStorage:
             try:
                 cloudinary.config(cloud_name=st.secrets['cloudinary']['cloud_name'],api_key=st.secrets['cloudinary']['api_key'],api_secret=st.secrets['cloudinary']['api_secret'])
                 self.use_cloud=True
-                st.success("✅ Cloudinary Connected!")
-            except:st.warning("⚠️ Cloudinary failed")
+                st.success("✅ VIDSPACE Cloud Connected!")
+            except:st.warning("⚠️ VIDSPACE Cloud failed")
     
     def upload_video(self,video_file,video_id):
         if self.use_cloud:
@@ -457,3 +457,4 @@ def main():
         else:st.info("No videos!")
 
 if __name__=="__main__":main()
+
