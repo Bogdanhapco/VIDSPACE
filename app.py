@@ -115,8 +115,8 @@ class MediaStorage:
             try:
                 cloudinary.config(cloud_name=st.secrets['cloudinary']['cloud_name'],api_key=st.secrets['cloudinary']['api_key'],api_secret=st.secrets['cloudinary']['api_secret'])
                 self.use_cloud=True
-                st.success("✅ VIDSPACE Cloud Connected!")
-            except:st.warning("⚠️ VIDSPACE Cloud failed")
+                st.success("✅ Cloudinary Connected!")
+            except:st.warning("⚠️ Cloudinary failed")
     
     def upload_video(self,video_file,video_id):
         if self.use_cloud:
@@ -138,8 +138,11 @@ class MediaStorage:
             import base64
             return base64.b64encode(image_file.read()).decode()
     
-    def get_video_player(self,video_data):
-        if video_data and video_data.startswith('http'):
+    def get_video_player(self,video):
+        # Handle both old (video_data) and new (video_url) field names
+        video_data=video.get('video_url')or video.get('video_data')
+        if not video_data:return st.error("No video data")
+        if video_data.startswith('http'):
             return st.video(video_data)
         else:
             import base64
@@ -147,9 +150,10 @@ class MediaStorage:
             except:return st.error("Error loading video")
     
     def display_image(self,image_data,use_column_width=True):
-        if image_data and image_data.startswith('http'):
+        if not image_data:return
+        if image_data.startswith('http'):
             return st.image(image_data,use_column_width=use_column_width)
-        elif image_data:
+        else:
             import base64
             try:return st.image(base64.b64decode(image_data),use_column_width=use_column_width)
             except:pass
@@ -393,13 +397,12 @@ def main():
             increment_views(v['id'])
             col1,col2=st.columns([3,1])
             with col1:
-                # Click username to view profile
                 st.markdown(f"<div class='video-card'><h3 style='color:#ff0050;margin:0;cursor:pointer'>@{v['username']}</h3><p style='margin:5px 0'>{v['caption']}</p><p style='color:#888;font-size:0.9em;margin:0'>{v['hashtags']}</p></div>",unsafe_allow_html=True)
                 if st.button(f"View @{v['username']}'s profile",key=f"vp{v['id']}"):
                     st.session_state.view_user=v['username']
                     st.session_state.page="profile"
                     st.rerun()
-                media.get_video_player(v['video_url'])
+                media.get_video_player(v)
             with col2:
                 st.markdown(f"**👁️ {v['views']}**")
                 i=db.get_one('interactions','username',st.session_state.username)
@@ -407,7 +410,6 @@ def main():
                 if st.button(f"{'❤️'if liked else'🤍'} {v['likes']}",key=f"l{v['id']}",use_container_width=True):toggle_like(st.session_state.username,v['id']);st.rerun()
                 if st.button("📤 Send",key=f"s{v['id']}",use_container_width=True):st.session_state.send_video_id=v['id'];st.session_state.page="messages";st.rerun()
                 
-                # Follow button
                 if v['username']!=st.session_state.username:
                     my_acc=db.get_one('accounts','username',st.session_state.username)
                     is_following=v['username']in my_acc.get('following',[])
@@ -432,7 +434,6 @@ def main():
         stories=get_active_stories()
         if not stories:st.info("No active stories!");return
         
-        # Group by user
         users_stories={}
         for s in stories:
             u=s['username']
@@ -506,7 +507,7 @@ def main():
                     vv=db.get_one('videos','id',m['video_id'])
                     if vv:
                         with st.expander("📹 Shared video"):
-                            media.get_video_player(vv['video_url'])
+                            media.get_video_player(vv)
                             st.markdown(f"**@{vv['username']}:** {vv['caption']}")
             st.divider()
             with st.form(key="mf",clear_on_submit=True):
@@ -555,7 +556,6 @@ def main():
         user_videos=[v for v in all_videos.values()if v['username']==view_user]
         user_videos.sort(key=lambda x:x['timestamp'],reverse=True)
         
-        # Profile header
         col1,col2=st.columns([1,4])
         with col1:
             if account.get('profile_pic'):
@@ -567,7 +567,6 @@ def main():
             st.markdown(f"<h1 style='color:#ff0050'>@{view_user}</h1>",unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:1.1em'>{account.get('bio','No bio')}</p>",unsafe_allow_html=True)
             
-            # Follow button for other users
             if view_user!=st.session_state.username:
                 my_acc=db.get_one('accounts','username',st.session_state.username)
                 is_following=view_user in my_acc.get('following',[])
@@ -585,7 +584,6 @@ def main():
                         st.session_state.page="messages"
                         st.rerun()
         
-        # Stats
         col1,col2,col3=st.columns(3)
         with col1:st.markdown(f"<div style='text-align:center;background:#1a1a1a;padding:20px;border-radius:10px'><h2 style='color:#ff0050;margin:0'>{len(user_videos)}</h2><p style='margin:5px 0 0 0'>Videos</p></div>",unsafe_allow_html=True)
         with col2:st.markdown(f"<div style='text-align:center;background:#1a1a1a;padding:20px;border-radius:10px'><h2 style='color:#ff0050;margin:0'>{len(account.get('followers',[]))}</h2><p style='margin:5px 0 0 0'>Followers</p></div>",unsafe_allow_html=True)
@@ -593,7 +591,6 @@ def main():
         
         st.divider()
         
-        # Edit profile (only for own profile)
         if view_user==st.session_state.username:
             with st.expander("✏️ Edit Profile"):
                 nb=st.text_area("Bio",value=account.get('bio',''),max_chars=200)
@@ -614,17 +611,15 @@ def main():
         
         st.divider()
         
-        # Tabs for posts and stories
         tab1,tab2=st.tabs(["📹 Videos","📖 Stories"])
         
         with tab1:
             st.markdown("<h3 style='color:#ff0050'>Videos</h3>",unsafe_allow_html=True)
             if user_videos:
-                # Show videos in grid
                 cols=st.columns(3)
                 for idx,v in enumerate(user_videos):
                     with cols[idx%3]:
-                        media.get_video_player(v['video_url'])
+                        media.get_video_player(v)
                         st.markdown(f"<p><strong>{v['caption'][:50]}...</strong></p>",unsafe_allow_html=True)
                         st.markdown(f"<p style='color:#888;font-size:0.9em'>❤️ {v['likes']} | 👁️ {v['views']} | 💬 {len(v.get('comments',[]))}</p>",unsafe_allow_html=True)
                         
@@ -655,4 +650,3 @@ def main():
                 st.info("No active stories!")
 
 if __name__=="__main__":main()
-
