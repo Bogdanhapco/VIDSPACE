@@ -1,10 +1,9 @@
 import streamlit as st
 
-# MUST BE FIRST - st.set_page_config
 st.set_page_config(page_title="🎬 VidSpace", page_icon="🎬", layout="wide")
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import time
 
@@ -28,6 +27,8 @@ APP_CSS = """
 .video-card{background:linear-gradient(135deg,#1a1a1a 0%,#2d2d2d 100%);border-radius:20px;padding:20px;margin:15px 0;border:2px solid #ff0050;box-shadow:0 0 20px rgba(255,0,80,0.3)}
 .chat-message-sent{background:linear-gradient(135deg,#ff0050,#ff3366);border-radius:15px;padding:10px 15px;margin:5px 0;max-width:70%;margin-left:auto}
 .chat-message-received{background:linear-gradient(135deg,#2d2d2d,#404040);border-radius:15px;padding:10px 15px;margin:5px 0;max-width:70%}
+.profile-pic{width:120px;height:120px;border-radius:50%;object-fit:cover;border:4px solid #ff0050}
+.story-circle{width:80px;height:80px;border-radius:50%;border:3px solid #ff0050;cursor:pointer;object-fit:cover}
 #MainMenu{visibility:hidden}footer{visibility:hidden}
 </style>
 """
@@ -114,8 +115,8 @@ class MediaStorage:
             try:
                 cloudinary.config(cloud_name=st.secrets['cloudinary']['cloud_name'],api_key=st.secrets['cloudinary']['api_key'],api_secret=st.secrets['cloudinary']['api_secret'])
                 self.use_cloud=True
-                st.success("✅ VIDSPACE Cloud Connected!")
-            except:st.warning("⚠️ VIDSPACE Cloud failed")
+                st.success("✅ Cloudinary Connected!")
+            except:st.warning("⚠️ Cloudinary failed")
     
     def upload_video(self,video_file,video_id):
         if self.use_cloud:
@@ -127,13 +128,31 @@ class MediaStorage:
             import base64
             return base64.b64encode(video_file.read()).decode()
     
+    def upload_image(self,image_file,image_id):
+        if self.use_cloud:
+            try:
+                result=cloudinary.uploader.upload(image_file,public_id=image_id,folder="vidspace_images")
+                return result['secure_url']
+            except:return None
+        else:
+            import base64
+            return base64.b64encode(image_file.read()).decode()
+    
     def get_video_player(self,video_data):
-        if self.use_cloud and video_data and video_data.startswith('http'):
+        if video_data and video_data.startswith('http'):
             return st.video(video_data)
         else:
             import base64
             try:return st.video(base64.b64decode(video_data))
             except:return st.error("Error loading video")
+    
+    def display_image(self,image_data,use_column_width=True):
+        if image_data and image_data.startswith('http'):
+            return st.image(image_data,use_column_width=use_column_width)
+        elif image_data:
+            import base64
+            try:return st.image(base64.b64decode(image_data),use_column_width=use_column_width)
+            except:pass
 
 media=MediaStorage()
 
@@ -143,12 +162,12 @@ def time_ago(timestamp_str):
     try:
         timestamp=datetime.fromisoformat(timestamp_str)
         diff=datetime.now()-timestamp
-        if diff.seconds<60:return "just now"
+        if diff.seconds<60:return"just now"
         elif diff.seconds<3600:return f"{diff.seconds//60}m ago"
         elif diff.seconds<86400:return f"{diff.seconds//3600}h ago"
         elif diff.days<7:return f"{diff.days}d ago"
         else:return timestamp.strftime("%b %d")
-    except:return "recently"
+    except:return"recently"
 
 def create_account(username,password):
     if db.get_one('accounts','username',username):return False,"Username exists"
@@ -183,12 +202,38 @@ def upload_video(username,video_file,caption,hashtags):
     video_id=create_id("vid")
     video_data=media.upload_video(video_file,video_id)
     if not video_data:return None
-    db.insert('videos',{'id':video_id,'username':username,'caption':caption,'hashtags':hashtags,'video_data':video_data,'timestamp':datetime.now().isoformat(),'likes':0,'views':0,'comments':[]})
+    db.insert('videos',{'id':video_id,'username':username,'caption':caption,'hashtags':hashtags,'video_url':video_data,'timestamp':datetime.now().isoformat(),'likes':0,'views':0,'comments':[]})
     account=db.get_one('accounts','username',username)
     if account:
         for follower in account.get('followers',[]):
             add_notification(follower,f"@{username} posted!")
     return video_id
+
+def upload_story(username,image_file,caption):
+    story_id=create_id("story")
+    image_data=media.upload_image(image_file,story_id)
+    if not image_data:return None
+    expires=(datetime.now()+timedelta(hours=24)).isoformat()
+    db.insert('stories',{'id':story_id,'username':username,'caption':caption,'image_url':image_data,'timestamp':datetime.now().isoformat(),'expires':expires,'views':[]})
+    return story_id
+
+def get_active_stories():
+    stories=db.get_all('stories')
+    now=datetime.now()
+    active=[]
+    for s in stories.values():
+        try:
+            if datetime.fromisoformat(s['expires'])>now:
+                active.append(s)
+        except:pass
+    return active
+
+def delete_story(story_id,username):
+    story=db.get_one('stories','id',story_id)
+    if story and story['username']==username:
+        db.delete('stories','id',story_id)
+        return True
+    return False
 
 def get_feed_videos(username):
     videos=list(db.get_all('videos').values())
@@ -277,10 +322,19 @@ def unfollow_user(follower,following):
             db.update('accounts','username',follower,{'following':fl})
             db.update('accounts','username',following,{'followers':fo})
 
+def update_profile_pic(username,image_file):
+    pic_id=create_id("profile")
+    pic_url=media.upload_image(image_file,pic_id)
+    if pic_url:
+        db.update('accounts','username',username,{'profile_pic':pic_url})
+        return True
+    return False
+
 def main():
     st.markdown(APP_CSS,unsafe_allow_html=True)
     if 'username'not in st.session_state:st.session_state.username=None
     if 'page'not in st.session_state:st.session_state.page="feed"
+    if 'view_user'not in st.session_state:st.session_state.view_user=None
     
     if not st.session_state.username:
         st.markdown("<h1 style='text-align:center;color:#ff0050;font-size:4.5em'>🎬 VidSpace</h1><p style='text-align:center;font-size:1.5em'>Create. Share. Connect.</p>",unsafe_allow_html=True)
@@ -313,18 +367,20 @@ def main():
     mc=get_unread_messages_count(st.session_state.username)
     st.markdown("<h1 style='text-align:center;color:#ff0050;font-size:3.5em'>🎬 VidSpace</h1>",unsafe_allow_html=True)
     
-    col1,col2,col3,col4,col5,col6=st.columns(6)
+    col1,col2,col3,col4,col5,col6,col7=st.columns(7)
     with col1:
-        if st.button("🏠 Feed",use_container_width=True):st.session_state.page="feed";st.rerun()
+        if st.button("🏠 Feed",use_container_width=True):st.session_state.page="feed";st.session_state.view_user=None;st.rerun()
     with col2:
-        if st.button(f"🔔{f' ({nc})'if nc>0 else''}",use_container_width=True):st.session_state.page="notif";st.rerun()
+        if st.button("📖 Stories",use_container_width=True):st.session_state.page="stories";st.rerun()
     with col3:
-        if st.button(f"💬{f' ({mc})'if mc>0 else''}",use_container_width=True):st.session_state.page="messages";st.rerun()
+        if st.button(f"🔔{f' ({nc})'if nc>0 else''}",use_container_width=True):st.session_state.page="notif";st.rerun()
     with col4:
-        if st.button("➕ Upload",use_container_width=True):st.session_state.page="upload";st.rerun()
+        if st.button(f"💬{f' ({mc})'if mc>0 else''}",use_container_width=True):st.session_state.page="messages";st.rerun()
     with col5:
-        if st.button("👤 Profile",use_container_width=True):st.session_state.page="profile";st.rerun()
+        if st.button("➕ Upload",use_container_width=True):st.session_state.page="upload";st.rerun()
     with col6:
+        if st.button("👤 Profile",use_container_width=True):st.session_state.page="profile";st.session_state.view_user=st.session_state.username;st.rerun()
+    with col7:
         if st.button("🚪 Logout",use_container_width=True):st.session_state.username=None;st.rerun()
     
     st.divider()
@@ -337,14 +393,31 @@ def main():
             increment_views(v['id'])
             col1,col2=st.columns([3,1])
             with col1:
-                st.markdown(f"<div class='video-card'><h3 style='color:#ff0050;margin:0'>@{v['username']}</h3><p style='margin:5px 0'>{v['caption']}</p><p style='color:#888;font-size:0.9em;margin:0'>{v['hashtags']}</p></div>",unsafe_allow_html=True)
-                media.get_video_player(v['video_data'])
+                # Click username to view profile
+                st.markdown(f"<div class='video-card'><h3 style='color:#ff0050;margin:0;cursor:pointer'>@{v['username']}</h3><p style='margin:5px 0'>{v['caption']}</p><p style='color:#888;font-size:0.9em;margin:0'>{v['hashtags']}</p></div>",unsafe_allow_html=True)
+                if st.button(f"View @{v['username']}'s profile",key=f"vp{v['id']}"):
+                    st.session_state.view_user=v['username']
+                    st.session_state.page="profile"
+                    st.rerun()
+                media.get_video_player(v['video_url'])
             with col2:
                 st.markdown(f"**👁️ {v['views']}**")
                 i=db.get_one('interactions','username',st.session_state.username)
                 liked=v['id']in(i.get('likes',[])if i else[])
                 if st.button(f"{'❤️'if liked else'🤍'} {v['likes']}",key=f"l{v['id']}",use_container_width=True):toggle_like(st.session_state.username,v['id']);st.rerun()
                 if st.button("📤 Send",key=f"s{v['id']}",use_container_width=True):st.session_state.send_video_id=v['id'];st.session_state.page="messages";st.rerun()
+                
+                # Follow button
+                if v['username']!=st.session_state.username:
+                    my_acc=db.get_one('accounts','username',st.session_state.username)
+                    is_following=v['username']in my_acc.get('following',[])
+                    if is_following:
+                        if st.button("✅ Following",key=f"uf{v['id']}",use_container_width=True):
+                            unfollow_user(st.session_state.username,v['username']);st.rerun()
+                    else:
+                        if st.button("➕ Follow",key=f"f{v['id']}",use_container_width=True):
+                            follow_user(st.session_state.username,v['username']);st.rerun()
+                
                 st.markdown(f"**💬 {len(v.get('comments',[]))}**")
                 with st.expander("Comments"):
                     for c in v.get('comments',[]):
@@ -352,6 +425,30 @@ def main():
                     ct=st.text_input("Comment",key=f"c{v['id']}",placeholder="Add...")
                     if st.button("Post",key=f"p{v['id']}"):
                         if ct:add_comment(v['id'],st.session_state.username,ct);st.rerun()
+            st.divider()
+    
+    elif st.session_state.page=="stories":
+        st.markdown("<h2 style='color:#ff0050'>📖 Stories</h2>",unsafe_allow_html=True)
+        stories=get_active_stories()
+        if not stories:st.info("No active stories!");return
+        
+        # Group by user
+        users_stories={}
+        for s in stories:
+            u=s['username']
+            if u not in users_stories:users_stories[u]=[]
+            users_stories[u].append(s)
+        
+        for user,user_stories in users_stories.items():
+            st.markdown(f"<h3 style='color:#ff0050'>@{user}</h3>",unsafe_allow_html=True)
+            cols=st.columns(min(len(user_stories),4))
+            for idx,s in enumerate(user_stories):
+                with cols[idx%4]:
+                    media.display_image(s['image_url'],use_column_width=True)
+                    st.markdown(f"<p>{s['caption']}</p>",unsafe_allow_html=True)
+                    if user==st.session_state.username:
+                        if st.button("🗑️",key=f"ds{s['id']}"):
+                            delete_story(s['id'],user);st.rerun()
             st.divider()
     
     elif st.session_state.page=="notif":
@@ -409,7 +506,7 @@ def main():
                     vv=db.get_one('videos','id',m['video_id'])
                     if vv:
                         with st.expander("📹 Shared video"):
-                            media.get_video_player(vv['video_data'])
+                            media.get_video_player(vv['video_url'])
                             st.markdown(f"**@{vv['username']}:** {vv['caption']}")
             st.divider()
             with st.form(key="mf",clear_on_submit=True):
@@ -420,41 +517,141 @@ def main():
     
     elif st.session_state.page=="upload":
         st.markdown("<h2 style='color:#ff0050'>➕ Upload</h2>",unsafe_allow_html=True)
-        col1,col2,col3=st.columns([1,2,1])
-        with col2:
-            vf=st.file_uploader("Video",type=['mp4','mov','avi','webm'])
-            cap=st.text_area("Caption",max_chars=500)
-            ht=st.text_input("Hashtags",placeholder="#trending")
-            if st.button("🚀 Upload",use_container_width=True):
-                if vf and cap:
-                    with st.spinner("Uploading..."):
-                        vid_id=upload_video(st.session_state.username,vf,cap,ht)
-                        if vid_id:st.success("Uploaded!");time.sleep(1);st.session_state.page="profile";st.rerun()
-                        else:st.error("Failed!")
-                else:st.error("Add video & caption!")
+        tab1,tab2=st.tabs(["📹 Video","📸 Story"])
+        
+        with tab1:
+            col1,col2,col3=st.columns([1,2,1])
+            with col2:
+                vf=st.file_uploader("Video",type=['mp4','mov','avi','webm'])
+                cap=st.text_area("Caption",max_chars=500)
+                ht=st.text_input("Hashtags",placeholder="#trending")
+                if st.button("🚀 Upload Video",use_container_width=True):
+                    if vf and cap:
+                        with st.spinner("Uploading..."):
+                            vid_id=upload_video(st.session_state.username,vf,cap,ht)
+                            if vid_id:st.success("Uploaded!");time.sleep(1);st.session_state.page="profile";st.session_state.view_user=st.session_state.username;st.rerun()
+                            else:st.error("Failed!")
+                    else:st.error("Add video & caption!")
+        
+        with tab2:
+            col1,col2,col3=st.columns([1,2,1])
+            with col2:
+                img=st.file_uploader("Image",type=['jpg','jpeg','png'])
+                scap=st.text_input("Caption",max_chars=100,key="story_cap")
+                if st.button("📸 Upload Story",use_container_width=True):
+                    if img:
+                        with st.spinner("Uploading..."):
+                            story_id=upload_story(st.session_state.username,img,scap)
+                            if story_id:st.success("Story uploaded! (24hrs)");time.sleep(1);st.session_state.page="stories";st.rerun()
+                            else:st.error("Failed!")
+                    else:st.error("Select image!")
     
     elif st.session_state.page=="profile":
-        u=st.session_state.username
-        a=db.get_one('accounts','username',u)
-        vids=[v for v in db.get_all('videos').values()if v['username']==u]
-        st.markdown(f"<div style='text-align:center;background:linear-gradient(135deg,#ff0050,#ff3366);padding:30px;border-radius:15px;margin-bottom:20px'><h1 style='margin:0'>@{u}</h1><p style='margin:10px 0 0 0'>{a.get('bio','No bio')}</p></div>",unsafe_allow_html=True)
-        col1,col2,col3=st.columns(3)
-        with col1:st.markdown(f"<div style='text-align:center;background:#1a1a1a;padding:20px;border-radius:10px'><h2 style='color:#ff0050;margin:0'>{len(vids)}</h2><p style='margin:5px 0 0 0'>Videos</p></div>",unsafe_allow_html=True)
-        with col2:st.markdown(f"<div style='text-align:center;background:#1a1a1a;padding:20px;border-radius:10px'><h2 style='color:#ff0050;margin:0'>{len(a.get('followers',[]))}</h2><p style='margin:5px 0 0 0'>Followers</p></div>",unsafe_allow_html=True)
-        with col3:st.markdown(f"<div style='text-align:center;background:#1a1a1a;padding:20px;border-radius:10px'><h2 style='color:#ff0050;margin:0'>{len(a.get('following',[]))}</h2><p style='margin:5px 0 0 0'>Following</p></div>",unsafe_allow_html=True)
-        st.divider()
-        with st.expander("✏️ Edit"):
-            nb=st.text_area("Bio",value=a.get('bio',''),max_chars=200)
-            if st.button("Save"):db.update('accounts','username',u,{'bio':nb});st.success("Updated!");st.rerun()
-        st.divider()
-        st.markdown("<h3 style='color:#ff0050'>Your Videos</h3>",unsafe_allow_html=True)
-        if vids:
-            for v in vids:
-                col1,col2=st.columns([4,1])
-                with col1:st.markdown(f"<div style='background:#1a1a1a;padding:15px;border-radius:10px'><p style='margin:0'><strong>{v['caption']}</strong></p><p style='color:#888;font-size:0.9em;margin:5px 0 0 0'>❤️ {v['likes']} | 👁️ {v['views']} | 💬 {len(v.get('comments',[]))}</p></div>",unsafe_allow_html=True)
+        view_user=st.session_state.get('view_user',st.session_state.username)
+        account=db.get_one('accounts','username',view_user)
+        if not account:st.error("User not found");return
+        
+        all_videos=db.get_all('videos')
+        user_videos=[v for v in all_videos.values()if v['username']==view_user]
+        user_videos.sort(key=lambda x:x['timestamp'],reverse=True)
+        
+        # Profile header
+        col1,col2=st.columns([1,4])
+        with col1:
+            if account.get('profile_pic'):
+                media.display_image(account['profile_pic'],use_column_width=True)
+            else:
+                st.markdown("<div style='width:120px;height:120px;background:#333;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:3em'>👤</div>",unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown(f"<h1 style='color:#ff0050'>@{view_user}</h1>",unsafe_allow_html=True)
+            st.markdown(f"<p style='font-size:1.1em'>{account.get('bio','No bio')}</p>",unsafe_allow_html=True)
+            
+            # Follow button for other users
+            if view_user!=st.session_state.username:
+                my_acc=db.get_one('accounts','username',st.session_state.username)
+                is_following=view_user in my_acc.get('following',[])
+                col1,col2,col3=st.columns([1,1,3])
+                with col1:
+                    if is_following:
+                        if st.button("✅ Following",use_container_width=True):
+                            unfollow_user(st.session_state.username,view_user);st.rerun()
+                    else:
+                        if st.button("➕ Follow",use_container_width=True):
+                            follow_user(st.session_state.username,view_user);st.rerun()
                 with col2:
-                    if st.button("🗑️",key=f"d{v['id']}"):db.delete('videos','id',v['id']);st.success("Deleted!");st.rerun()
-        else:st.info("No videos!")
+                    if st.button("💬 Message",use_container_width=True):
+                        st.session_state.chat_with=view_user
+                        st.session_state.page="messages"
+                        st.rerun()
+        
+        # Stats
+        col1,col2,col3=st.columns(3)
+        with col1:st.markdown(f"<div style='text-align:center;background:#1a1a1a;padding:20px;border-radius:10px'><h2 style='color:#ff0050;margin:0'>{len(user_videos)}</h2><p style='margin:5px 0 0 0'>Videos</p></div>",unsafe_allow_html=True)
+        with col2:st.markdown(f"<div style='text-align:center;background:#1a1a1a;padding:20px;border-radius:10px'><h2 style='color:#ff0050;margin:0'>{len(account.get('followers',[]))}</h2><p style='margin:5px 0 0 0'>Followers</p></div>",unsafe_allow_html=True)
+        with col3:st.markdown(f"<div style='text-align:center;background:#1a1a1a;padding:20px;border-radius:10px'><h2 style='color:#ff0050;margin:0'>{len(account.get('following',[]))}</h2><p style='margin:5px 0 0 0'>Following</p></div>",unsafe_allow_html=True)
+        
+        st.divider()
+        
+        # Edit profile (only for own profile)
+        if view_user==st.session_state.username:
+            with st.expander("✏️ Edit Profile"):
+                nb=st.text_area("Bio",value=account.get('bio',''),max_chars=200)
+                if st.button("Save Bio"):
+                    db.update('accounts','username',view_user,{'bio':nb})
+                    st.success("Updated!")
+                    st.rerun()
+                
+                st.markdown("**Profile Picture:**")
+                pp=st.file_uploader("Upload",type=['jpg','jpeg','png'],key="pp")
+                if pp:
+                    if st.button("Upload Profile Pic"):
+                        if update_profile_pic(view_user,pp):
+                            st.success("Updated!")
+                            st.rerun()
+                        else:
+                            st.error("Failed!")
+        
+        st.divider()
+        
+        # Tabs for posts and stories
+        tab1,tab2=st.tabs(["📹 Videos","📖 Stories"])
+        
+        with tab1:
+            st.markdown("<h3 style='color:#ff0050'>Videos</h3>",unsafe_allow_html=True)
+            if user_videos:
+                # Show videos in grid
+                cols=st.columns(3)
+                for idx,v in enumerate(user_videos):
+                    with cols[idx%3]:
+                        media.get_video_player(v['video_url'])
+                        st.markdown(f"<p><strong>{v['caption'][:50]}...</strong></p>",unsafe_allow_html=True)
+                        st.markdown(f"<p style='color:#888;font-size:0.9em'>❤️ {v['likes']} | 👁️ {v['views']} | 💬 {len(v.get('comments',[]))}</p>",unsafe_allow_html=True)
+                        
+                        if view_user==st.session_state.username:
+                            if st.button("🗑️ Delete",key=f"d{v['id']}"):
+                                db.delete('videos','id',v['id'])
+                                st.success("Deleted!")
+                                st.rerun()
+            else:
+                st.info("No videos yet!")
+        
+        with tab2:
+            st.markdown("<h3 style='color:#ff0050'>Active Stories</h3>",unsafe_allow_html=True)
+            stories=get_active_stories()
+            user_stories=[s for s in stories if s['username']==view_user]
+            
+            if user_stories:
+                cols=st.columns(min(len(user_stories),4))
+                for idx,s in enumerate(user_stories):
+                    with cols[idx%4]:
+                        media.display_image(s['image_url'],use_column_width=True)
+                        st.markdown(f"<p>{s['caption']}</p>",unsafe_allow_html=True)
+                        if view_user==st.session_state.username:
+                            if st.button("🗑️",key=f"dss{s['id']}"):
+                                delete_story(s['id'],view_user)
+                                st.rerun()
+            else:
+                st.info("No active stories!")
 
 if __name__=="__main__":main()
-
